@@ -11,6 +11,13 @@ interface DialogProps {
 export default function Dialog({ title, open, onClose, children }: DialogProps) {
   const ref = useRef<HTMLDivElement>(null)
   const lastFocused = useRef<Element | null>(null)
+  // 父组件通常传入内联箭头函数,每次渲染都是新引用。
+  // 用 ref 保存最新的 onClose,让下面的 effect 只在打开/关闭时执行一次;
+  // 否则每输入一个字符都会重新执行 effect,把焦点抢回第一个输入框,并打断中文输入法组字。
+  const onCloseRef = useRef(onClose)
+  useEffect(() => {
+    onCloseRef.current = onClose
+  }, [onClose])
 
   useEffect(() => {
     if (!open) return
@@ -23,11 +30,15 @@ export default function Dialog({ title, open, onClose, children }: DialogProps) 
           'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
         ),
       ).filter((el) => !el.hasAttribute('disabled'))
-    focusables()[0]?.focus()
+    // 打开时优先聚焦第一个表单字段,没有表单字段再聚焦第一个按钮
+    const firstField = node.querySelector<HTMLElement>('input:not([disabled]), select:not([disabled]), textarea:not([disabled])')
+    ;(firstField ?? focusables()[0])?.focus()
 
     const handleKey = (e: KeyboardEvent) => {
+      // 输入法组字中按 Esc 是取消候选词,不应关闭弹窗
+      if (e.isComposing || e.keyCode === 229) return
       if (e.key === 'Escape') {
-        onClose()
+        onCloseRef.current()
         return
       }
       if (e.key !== 'Tab') return
@@ -50,7 +61,7 @@ export default function Dialog({ title, open, onClose, children }: DialogProps) 
         lastFocused.current.focus()
       }
     }
-  }, [open, onClose])
+  }, [open])
 
   if (!open) return null
 
