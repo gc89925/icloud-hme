@@ -117,7 +117,11 @@ func (c *Client) Login(username, password string, otpProvider OTPProvider) error
 
 	// 11. 保存 Cookie 到 Client
 	cookies := c.extractSessionCookies()
+	c.mu.Lock()
 	c.Cookies = cookies
+	c.serviceURL = ""
+	c.cookieRev++
+	c.mu.Unlock()
 	c.log("登录成功,获取到 %d 个 Cookie", len(cookies))
 	return nil
 }
@@ -137,7 +141,7 @@ func (c *Client) authStart(state *authState) error {
 	req.Header.Set("Accept", "*/*")
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
 
-	resp, err := c.httpc.Do(req)
+	resp, err := c.authc.Do(req)
 	if err != nil {
 		return err
 	}
@@ -162,7 +166,7 @@ func (c *Client) authFederate(state *authState) error {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header = c.updateAuthHeaders(req.Header, state)
 
-	resp, err := c.httpc.Do(req)
+	resp, err := c.authc.Do(req)
 	if err != nil {
 		return err
 	}
@@ -204,7 +208,7 @@ func (c *Client) authInit(state *authState, a string) (*authInitResp, error) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header = c.updateAuthHeaders(req.Header, state)
 
-	resp, err := c.httpc.Do(req)
+	resp, err := c.authc.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -241,7 +245,7 @@ func (c *Client) authComplete(state *authState, m1, m2 string, otpProvider OTPPr
 	req.Header.Set("Content-Type", "application/json")
 	req.Header = c.updateAuthHeaders(req.Header, state)
 
-	resp, err := c.httpc.Do(req)
+	resp, err := c.authc.Do(req)
 	if err != nil {
 		return err
 	}
@@ -290,7 +294,7 @@ func (c *Client) handleTwoFactor(state *authState, signinResp *http.Response, ot
 	req.Header.Set("Content-Type", "application/json")
 	req.Header = c.updateAuthHeaders(req.Header, state)
 
-	resp, err := c.httpc.Do(req)
+	resp, err := c.authc.Do(req)
 	if err != nil {
 		return err
 	}
@@ -315,7 +319,7 @@ func (c *Client) getTrust(state *authState) error {
 
 	req.Header = c.updateAuthHeaders(req.Header, state)
 
-	resp, err := c.httpc.Do(req)
+	resp, err := c.authc.Do(req)
 	if err != nil {
 		return err
 	}
@@ -344,7 +348,7 @@ func (c *Client) authenticateWeb(state *authState) error {
 	req.Header.Set("Origin", c.Origin())
 	req.Header.Set("Accept", "*/*")
 
-	resp, err := c.httpc.Do(req)
+	resp, err := c.authc.Do(req)
 	if err != nil {
 		return err
 	}
@@ -365,8 +369,8 @@ func (c *Client) authenticateWeb(state *authState) error {
 	// 复制 idmsa.apple.com 的 Cookie 到 icloud.com
 	u1, _ := url.Parse("https://idmsa.apple.com")
 	u2, _ := url.Parse("https://icloud.com")
-	cookies := c.httpc.GetCookies(u1)
-	c.httpc.SetCookies(u2, cookies)
+	cookies := c.authc.GetCookies(u1)
+	c.authc.SetCookies(u2, cookies)
 
 	return nil
 }
@@ -375,8 +379,13 @@ func (c *Client) authenticateWeb(state *authState) error {
 func (c *Client) extractSessionCookies() map[string]string {
 	cookies := make(map[string]string)
 	u, _ := url.Parse(c.Origin())
-	for _, cookie := range c.httpc.GetCookies(u) {
-		cookies[cookie.Name] = cookie.Value
+	for _, cookie := range c.authc.GetCookies(u) {
+		v := cookie.Value
+		// 保留 Apple 下发时的双引号形式,与浏览器回传 Cookie 的格式一致
+		if cookie.Quoted && !strings.HasPrefix(v, `"`) {
+			v = `"` + v + `"`
+		}
+		cookies[cookie.Name] = v
 	}
 	return cookies
 }
@@ -402,7 +411,7 @@ func (c *Client) updateAuthHeaders(header http.Header, state *authState) http.He
 
 // Validate 验证当前 Cookie 是否有效
 func (c *Client) Validate() (bool, error) {
-	if len(c.Cookies) == 0 {
+	if len(c.CookiesSnapshot()) == 0 {
 		return false, fmt.Errorf("无 Cookie")
 	}
 	// 简单实现：尝试调用 validate 端点

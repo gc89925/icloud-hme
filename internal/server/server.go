@@ -22,6 +22,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"icloud-hme/internal/account"
 	"icloud-hme/internal/auth"
+	"icloud-hme/internal/hme"
 	"icloud-hme/internal/webui"
 )
 
@@ -278,15 +279,26 @@ func (s *Server) listAliasesHandler(c *gin.Context) {
 		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "参数缺失: account_id")
 		return
 	}
-	aliases, err := s.be.ListAliases(accountID)
+	refresh := c.Query("refresh") == "1" || c.Query("refresh") == "true"
+	list, err := s.be.ListAliases(accountID, refresh)
 	if err != nil {
 		backendFail(c, err)
 		return
+	}
+	aliases := list.Aliases
+	if aliases == nil {
+		aliases = []hme.Alias{}
+	}
+	fetchedAt := ""
+	if !list.FetchedAt.IsZero() {
+		fetchedAt = list.FetchedAt.Format(time.RFC3339)
 	}
 	ok(c, gin.H{
 		"account_id": accountID,
 		"count":      len(aliases),
 		"aliases":    aliases,
+		"cached":     list.Cached,
+		"fetched_at": fetchedAt,
 	})
 }
 

@@ -35,6 +35,7 @@ type Account struct {
 	AliasActive   int               `json:"alias_active"`
 	LastValidated string            `json:"last_validated"`
 	LastError     string            `json:"last_error,omitempty"`
+	StatusDetail  string            `json:"status_detail,omitempty"`
 	CreatedAt     string            `json:"created_at"`
 }
 
@@ -54,6 +55,7 @@ type Manager struct {
 	dataDir  string
 	dataFile string
 	imapPool *mail.Pool // IMAP 长连接池
+	cache    *runtimeCache
 }
 
 // cloneCookies 返回 Cookie map 的独立副本。
@@ -88,6 +90,7 @@ func NewManager(dataDir string) (*Manager, error) {
 		dataDir:  dataDir,
 		dataFile: filepath.Join(dataDir, "accounts.json"),
 		imapPool: mail.NewPool(),
+		cache:    newRuntimeCache(),
 	}
 	if err := m.load(); err != nil {
 		return nil, err
@@ -106,6 +109,7 @@ func (m *Manager) Close() {
 func (m *Manager) Reload() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.invalidateAll()
 	return m.load()
 }
 
@@ -295,13 +299,13 @@ func (a *Account) validateCookies() {
 	}
 	if err := client.ValidateSession(); err != nil {
 		// validate 即使失败也可能通过 Set-Cookie 刷新部分会话状态。
-		a.Cookies = client.Cookies
+		a.Cookies = client.CookiesSnapshot()
 		a.Status = "error"
 		a.LastError = truncate(err.Error(), 300)
 		return
 	}
 	// 显式接收 validate 刷新的 Cookie，不依赖传入 map 的引用关系。
-	a.Cookies = client.Cookies
+	a.Cookies = client.CookiesSnapshot()
 	a.Status = "active"
 	if info := client.AccountInfo(); info != nil {
 		a.RealEmail = firstNonEmpty(info.AppleID, info.PrimaryEmail)
@@ -362,6 +366,7 @@ func (m *Manager) UpdateMetadata(id string, input UpdateAccountInput) (Summary, 
 	}
 	if host != nil {
 		acc.Host = *host
+		m.invalidate(id)
 	}
 	if err := m.save(); err != nil {
 		return Summary{}, err
@@ -382,6 +387,7 @@ func (m *Manager) UpdateProxy(id, proxy string) (Summary, error) {
 		return Summary{}, fmt.Errorf("账号不存在: %s", id)
 	}
 	acc.Proxy = proxy
+	m.invalidate(id)
 	if err := m.save(); err != nil {
 		return Summary{}, err
 	}
@@ -396,6 +402,7 @@ func (m *Manager) RemoveAccount(id string) bool {
 		return false
 	}
 	delete(m.accounts, id)
+	m.invalidate(id)
 	_ = m.save()
 	return true
 }
@@ -465,25 +472,6 @@ func statusRank(status string) int {
 	}
 }
 
-// HMEClient 为指定账号创建一个新的 HME 客户端。
-// 必须有有效的 Cookie 才能使用 HME 功能。
-func (m *Manager) HMEClient(id string, verbose bool) (*hme.Client, error) {
-	m.mu.RLock()
-	acc, ok := m.accounts[id]
-	var snap *Account
-	if ok {
-		snap = copyAccount(acc)
-	}
-	m.mu.RUnlock()
-	if !ok {
-		return nil, fmt.Errorf("账号不存在: %s", id)
-	}
-	if len(snap.Cookies) == 0 {
-		return nil, fmt.Errorf("账号未配置 Cookie，无法使用 HME 功能")
-	}
-	return hme.NewClient(snap.Cookies, snap.Host, snap.Proxy, verbose)
-}
-
 // HMEClientWithPassword 为指定账号创建一个新的 HME 客户端,使用账号密码登录。
 // 登录成功后会自动获取 Cookie 并保存到账号配置。
 func (m *Manager) HMEClientWithPassword(id, password string, otpProvider hme.OTPProvider) (*hme.Client, error) {
@@ -517,12 +505,12 @@ func (m *Manager) HMEClientWithPassword(id, password string, otpProvider hme.OTP
 
 	// 先保存 accountLogin 返回的 Cookie，随后通过 validate 刷新会话并再次持久化。
 	// 国区与美区都走同一条刷新链路，避免只保存登录阶段的临时 token。
-	if err := m.SaveCookies(id, client.Cookies); err != nil {
+	if err := m.SaveCookies(id, client.CookiesSnapshot()); err != nil {
 		return nil, err
 	}
 	if err := client.ValidateSession(); err != nil {
 		// validate 的失败响应也可能携带 Set-Cookie，尽量保留服务端最新状态。
-		_ = m.SaveCookies(id, client.Cookies)
+		_ = m.SaveCookies(id, client.CookiesSnapshot())
 		return nil, err
 	}
 
@@ -533,7 +521,8 @@ func (m *Manager) HMEClientWithPassword(id, password string, otpProvider hme.OTP
 		m.mu.Unlock()
 		return nil, fmt.Errorf("账号不存在: %s", id)
 	}
-	cur.Cookies = cloneCookies(client.Cookies)
+	cur.Cookies = cloneCookies(client.CookiesSnapshot())
+	m.invalidate(id)
 	cur.Status = "active"
 	cur.LastValidated = time.Now().Format(time.RFC3339)
 	cur.LastError = ""
@@ -583,57 +572,27 @@ func (m *Manager) MailClient(id string) (*mail.Client, error) {
 }
 
 // WithMailClient 使用连接池中的长连接执行 fn(串行/账号级)。
-// fn 返回后连接保留在池中, 不会 Logout。
+// 外部邮箱(QQ/Gmail 等)与 iCloud App 专用密码都走连接池, fn 返回后连接保留在池中。
 func (m *Manager) WithMailClient(id string, fn func(*mail.Client) error) error {
-	m.mu.RLock()
-	acc, ok := m.accounts[id]
-	var mailbox *MailboxConfig
-	if ok && acc.Mailbox != nil {
-		copy := *acc.Mailbox
-		mailbox = &copy
-	}
-	m.mu.RUnlock()
-	if mailbox != nil && mailbox.Email != "" && mailbox.Password != "" {
-		mc := mail.NewClientWithServer(mailbox.Email, mailbox.Password, mailbox.IMAPHost, mailbox.IMAPPort)
-		if err := mc.Connect(); err != nil {
-			return err
-		}
-		defer mc.Disconnect()
-		return fn(mc)
-	}
-	imapEmail, appPassword, err := m.imapCreds(id)
+	creds, err := m.mailCreds(id)
 	if err != nil {
 		return err
 	}
 	if m.imapPool == nil {
 		m.imapPool = mail.NewPool()
 	}
-	return m.imapPool.Do(imapEmail, appPassword, fn)
+	return m.imapPool.DoWith(creds, fn)
 }
 
-func (m *Manager) imapCreds(id string) (imapEmail, appPassword string, err error) {
-	m.mu.RLock()
-	acc, ok := m.accounts[id]
-	var snap *Account
-	if ok {
-		snap = copyAccount(acc)
-	}
-	m.mu.RUnlock()
-	if !ok {
-		return "", "", fmt.Errorf("账号不存在: %s", id)
-	}
-	imapEmail = snap.ICloudEmail
-	if imapEmail == "" {
-		imapEmail = snap.RealEmail
-	}
-	if !isICloudDomain(imapEmail) {
-		return "", "", fmt.Errorf("账号未设置 iCloud 邮箱 (当前: %s)", imapEmail)
-	}
-	if snap.AppPassword == "" {
-		return "", "", fmt.Errorf("账号未设置 App 专用密码")
-	}
-	return imapEmail, snap.AppPassword, nil
-}
+var (
+	errNoCookies = fmt.Errorf("账号未配置 Cookie，无法使用 HME 功能")
+	errNoMailbox = fmt.Errorf("账号未配置收信邮箱(外部邮箱授权码或 iCloud App 专用密码)")
+)
+
+func errAccountNotFound(id string) error { return fmt.Errorf("账号不存在: %s", id) }
+
+// ErrNoMailbox 表示账号没有配置 IMAP 收信。
+var ErrNoMailbox = errNoMailbox
 
 // SetMailbox validates and stores an external IMAP mailbox after testing it.
 func (m *Manager) SetMailbox(id string, config MailboxConfig) error {
@@ -751,6 +710,7 @@ func (m *Manager) SaveCookies(id string, cookies map[string]string) error {
 		return fmt.Errorf("账号不存在: %s", id)
 	}
 	acc.Cookies = cloneCookies(cookies)
+	m.invalidate(id)
 	return m.save()
 }
 
@@ -781,12 +741,12 @@ func (m *Manager) UpdateCookies(id string, cookies map[string]string) error {
 		snap.LastError = "创建客户端失败: " + err.Error()
 	} else if err := client.ValidateSession(); err != nil {
 		// validate 即使失败也可能通过 Set-Cookie 刷新部分会话状态。
-		snap.Cookies = client.Cookies
+		snap.Cookies = client.CookiesSnapshot()
 		snap.Status = "error"
 		snap.LastError = "Cookie 校验失败: " + err.Error()
 	} else {
 		// 显式保存 validate 响应刷新的 Cookie，不依赖传入 map 的引用关系。
-		snap.Cookies = client.Cookies
+		snap.Cookies = client.CookiesSnapshot()
 		snap.Status = "active"
 		snap.LastValidated = time.Now().Format(time.RFC3339)
 		snap.LastError = ""
@@ -805,6 +765,7 @@ func (m *Manager) UpdateCookies(id string, cookies map[string]string) error {
 		return fmt.Errorf("账号不存在: %s", id)
 	}
 	cur.Cookies = snap.Cookies
+	m.invalidate(id)
 	cur.Status = snap.Status
 	cur.LastValidated = snap.LastValidated
 	cur.LastError = snap.LastError

@@ -866,13 +866,93 @@ td .cell-secondary {
 }
 
 .mail-body {
-  max-height: 50vh;
+  max-height: 60vh;
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-word;
+  overflow-wrap: anywhere;
   padding: var(--space-3);
   border-radius: var(--radius-sm);
   background: var(--color-bg-subtle);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+}
+
+/* ─── 收件箱表格:固定列宽,长内容截断,操作列始终可见 ─── */
+.inbox-table {
+  table-layout: fixed;
+  min-width: 860px;
+}
+
+.inbox-table col.col-subject { width: 22%; }
+.inbox-table col.col-from { width: 15%; }
+.inbox-table col.col-to { width: 15%; }
+.inbox-table col.col-date { width: 128px; }
+.inbox-table col.col-preview { width: auto; }
+.inbox-table col.col-actions { width: 64px; }
+
+.inbox-table td {
+  vertical-align: top;
+  font-size: var(--text-sm);
+}
+
+.inbox-table td.cell-nowrap,
+.cell-nowrap {
+  white-space: nowrap;
+  color: var(--color-text-secondary);
+}
+
+.cell-ellipsis {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cell-clamp {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+  color: var(--color-text-secondary);
+}
+
+.cell-clamp-strong {
+  color: var(--color-primary);
+  font-weight: 500;
+}
+
+.inbox-actions {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.inbox-actions .icon-button {
+  margin-left: 0;
+  border-radius: var(--radius-sm);
+  color: var(--color-danger);
+}
+
+.inbox-actions .icon-button:hover:not(:disabled) {
+  background: var(--color-danger-soft);
+}
+
+.list-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.alert-hint {
+  margin-top: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
 }
 
 /* 减少动效偏好 */

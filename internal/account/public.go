@@ -55,6 +55,10 @@ func (a *Account) Summary() Summary {
 		s.StatusMessage = "等待配置或验证凭据"
 	case "error":
 		s.StatusMessage = "凭据验证失败"
+		// StatusDetail 由 MarkUpstreamResult 写入,是经过整理的可展示原因(不含上游原文)
+		if a.StatusDetail != "" && a.StatusDetail == a.LastError {
+			s.StatusMessage = a.StatusDetail
+		}
 	}
 	return s
 }

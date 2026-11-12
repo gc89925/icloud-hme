@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import Dialog from './Dialog'
 import { request, ApiError } from '../api/client'
 import type { MailboxSummary } from '../api/types'
@@ -19,16 +19,20 @@ export default function MailboxDialog({ accountId, current, open, onClose, onSav
   const [code, setCode] = useState('')
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const [prevOpen, setPrevOpen] = useState(open)
 
-  useEffect(() => {
-    if (!open) return
-    setProvider(current?.provider || 'qq')
-    setEmail(current?.email || '')
-    setHost(current?.imap_host || 'imap.qq.com')
-    setPort(String(current?.imap_port || 993))
-    setCode('')
-    setError('')
-  }, [open, current])
+  // 每次打开时重置表单(渲染期调整 state,避免 effect 中同步 setState 造成级联渲染)
+  if (open !== prevOpen) {
+    setPrevOpen(open)
+    if (open) {
+      setProvider(current?.provider || 'qq')
+      setEmail(current?.email || '')
+      setHost(current?.imap_host || 'imap.qq.com')
+      setPort(String(current?.imap_port || 993))
+      setCode('')
+      setError('')
+    }
+  }
 
   function changeProvider(value: string) {
     setProvider(value)

@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { request, ApiError } from '../api/client'
-import type { AccountSummary, Alias } from '../api/types'
+import type { AccountSummary, Alias, AliasListResult } from '../api/types'
 import AsyncState from '../components/AsyncState'
 import CreateAliasDialog from '../components/CreateAliasDialog'
 import ConfirmDialog from '../components/ConfirmDialog'
@@ -74,6 +74,11 @@ export default function AliasesPage() {
   } | null>(null)
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState('')
+  const [errorCode, setErrorCode] = useState('')
+  const [settledKey, setSettledKey] = useState('')
+  const [fetchedAt, setFetchedAt] = useState('')
+  const [cached, setCached] = useState(false)
+  const forceRefresh = useRef(false)
 
   const [searchParams, setSearchParams] = useSearchParams()
   const { show, showCopyable } = useToast()
@@ -106,24 +111,35 @@ export default function AliasesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // 加载别名列表
+  // 加载别名列表(后端有 2 分钟缓存;点「刷新」时强制从 iCloud 重新获取)
   useEffect(() => {
     if (!accountId) return
     let cancelled = false
-    request<{ account_id: string; count: number; aliases: Alias[] }>(
-      `/api/aliases?account_id=${encodeURIComponent(accountId)}`,
+    const force = forceRefresh.current
+    forceRefresh.current = false
+    const key = `${accountId}|${retryKey}`
+    request<AliasListResult>(
+      `/api/aliases?account_id=${encodeURIComponent(accountId)}${force ? '&refresh=1' : ''}`,
+      { timeoutMs: 40_000 },
     )
       .then((data) => {
         if (cancelled) return
         setAliases(data.aliases ?? [])
+        setFetchedAt(data.fetched_at ?? '')
+        setCached(Boolean(data.cached))
         setError('')
+        setErrorCode('')
       })
       .catch((err) => {
         if (cancelled) return
         setError(err instanceof ApiError ? err.message : '网络连接失败，请检查服务状态')
+        setErrorCode(err instanceof ApiError ? err.code : '')
       })
       .finally(() => {
-        if (!cancelled) setLoading(false)
+        if (!cancelled) {
+          setLoading(false)
+          setSettledKey(key)
+        }
       })
     return () => {
       cancelled = true
@@ -158,7 +174,15 @@ export default function AliasesPage() {
   }, [aliases, search, filter, sortDirection])
 
   function handleRetry() {
-    setLoading(true)
+    setLoading(aliases.length === 0)
+    forceRefresh.current = true
+    setRetryKey((k) => k + 1)
+  }
+
+  const refreshing = Boolean(accountId) && settledKey !== `${accountId}|${retryKey}`
+
+  function handleRefresh() {
+    forceRefresh.current = true
     setRetryKey((k) => k + 1)
   }
 
@@ -297,6 +321,20 @@ export default function AliasesPage() {
         </div>
       </div>
 
+      {!loading && !error && (
+        <p className="hint list-meta">
+          <span>共 {aliases.length} 个别名{filtered.length !== aliases.length ? `，筛选后 ${filtered.length} 个` : ''}</span>
+          {fetchedAt && (
+            <span>
+              {cached ? '缓存于' : '更新于'} {formatDate(fetchedAt)}
+            </span>
+          )}
+          <button type="button" onClick={handleRefresh} disabled={refreshing} style={{ minHeight: 28, padding: '2px 10px' }}>
+            {refreshing ? '刷新中…' : '从 iCloud 刷新'}
+          </button>
+        </p>
+      )}
+
       <AsyncState
         loading={loading}
         error={error}
@@ -387,6 +425,15 @@ export default function AliasesPage() {
           </table>
         </div>
       </AsyncState>
+
+      {error && errorCode === 'UPSTREAM_UNAUTHORIZED' && (
+        <p className="alert-hint">
+          处理方法：在浏览器登录 icloud.com 后复制最新 Cookie，到 <Link to="/accounts">账号</Link> 页面点「更新 Cookie」；或使用「密码登录」。
+        </p>
+      )}
+      {error && errorCode === 'UPSTREAM_UNREACHABLE' && (
+        <p className="alert-hint">处理方法：检查运行本服务的设备能否访问 icloud.com，或在账号中配置代理。</p>
+      )}
 
       <CreateAliasDialog
         accountId={accountId}

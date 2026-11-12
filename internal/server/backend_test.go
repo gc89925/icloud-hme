@@ -111,8 +111,8 @@ func (f *fakeBackend) CreateAlias(accountID, label string) (*hme.CreateResult, e
 	return f.created, nil
 }
 
-func (f *fakeBackend) ListAliases(accountID string) ([]hme.Alias, error) {
-	return f.aliases, nil
+func (f *fakeBackend) ListAliases(accountID string, refresh bool) (AliasList, error) {
+	return AliasList{Aliases: f.aliases}, nil
 }
 
 func (f *fakeBackend) SetAliasActive(accountID, anonymousID string, active bool) (bool, error) {

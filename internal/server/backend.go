@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"icloud-hme/internal/account"
 	"icloud-hme/internal/hme"
@@ -52,7 +53,7 @@ type Backend interface {
 	LoginAccount(string, string, string) (account.Summary, error)
 	RemoveAccount(string) bool
 	CreateAlias(string, string) (*hme.CreateResult, error)
-	ListAliases(string) ([]hme.Alias, error)
+	ListAliases(string, bool) (AliasList, error)
 	SetAliasActive(string, string, bool) (bool, error)
 	DeleteAlias(string, string) error
 	ListInbox(InboxQuery) (InboxResult, error)
@@ -192,148 +193,200 @@ func (b *managerBackend) RemoveAccount(id string) bool {
 	return b.mgr.RemoveAccount(id)
 }
 
-// CreateAlias 创建 HME 别名。
-func (b *managerBackend) CreateAlias(accountID, label string) (*hme.CreateResult, error) {
+// aliasCacheTTL 别名列表缓存时间。别名变更操作会主动让缓存失效,所以可以适当长一些。
+const aliasCacheTTL = 2 * time.Minute
+
+// AliasList 是别名列表结果。
+type AliasList struct {
+	Aliases   []hme.Alias
+	FetchedAt time.Time
+	Cached    bool
+}
+
+// withHME 获取账号的 HME 客户端执行 fn,并统一处理 Cookie 持久化与账号状态。
+func (b *managerBackend) withHME(accountID, op string, fn func(*hme.Client) error) error {
 	client, err := b.mgr.HMEClient(accountID, false)
 	if err != nil {
-		return nil, mapAccountErr(err)
+		return mapAccountErr(err)
 	}
-	result, err := client.CreateAlias(label, 5)
-	_ = b.mgr.SaveCookies(accountID, client.Cookies)
+	err = fn(client)
+	b.mgr.SyncClientCookies(accountID, client)
+	b.mgr.MarkUpstreamResult(accountID, err)
 	if err != nil {
-		return nil, classifyUpstreamErr("创建邮箱失败", err)
+		return classifyUpstreamErr(op, err)
 	}
+	return nil
+}
+
+// CreateAlias 创建 HME 别名。
+func (b *managerBackend) CreateAlias(accountID, label string) (*hme.CreateResult, error) {
+	var result *hme.CreateResult
+	err := b.withHME(accountID, "创建邮箱失败", func(c *hme.Client) error {
+		var e error
+		result, e = c.CreateAlias(label, 2)
+		return e
+	})
+	if err != nil {
+		return nil, err
+	}
+	b.mgr.InvalidateAliases(accountID)
 	return result, nil
 }
 
-// ListAliases 列出账号的 HME 别名。
-func (b *managerBackend) ListAliases(accountID string) ([]hme.Alias, error) {
-	client, err := b.mgr.HMEClient(accountID, false)
-	if err != nil {
-		return nil, mapAccountErr(err)
+// ListAliases 列出账号的 HME 别名;refresh=false 时优先使用短期缓存。
+func (b *managerBackend) ListAliases(accountID string, refresh bool) (AliasList, error) {
+	if !refresh {
+		if aliases, at, ok := b.mgr.CachedAliases(accountID, aliasCacheTTL); ok {
+			return AliasList{Aliases: aliases, FetchedAt: at, Cached: true}, nil
+		}
 	}
-	aliases, err := client.ListAliases()
-	_ = b.mgr.SaveCookies(accountID, client.Cookies)
+	var aliases []hme.Alias
+	err := b.withHME(accountID, "获取别名列表失败", func(c *hme.Client) error {
+		var e error
+		aliases, e = c.ListAliases()
+		return e
+	})
 	if err != nil {
-		return nil, classifyUpstreamErr("获取别名列表失败", err)
+		return AliasList{}, err
 	}
-	return aliases, nil
+	at := b.mgr.StoreAliases(accountID, aliases)
+	return AliasList{Aliases: aliases, FetchedAt: at}, nil
 }
 
 // SetAliasActive 停用或激活别名。
 func (b *managerBackend) SetAliasActive(accountID, anonymousID string, active bool) (bool, error) {
-	client, err := b.mgr.HMEClient(accountID, false)
-	if err != nil {
-		return false, mapAccountErr(err)
+	op := "停用失败"
+	if active {
+		op = "激活失败"
 	}
 	var success bool
-	if active {
-		success, err = client.ReactivateHME(anonymousID)
-	} else {
-		success, err = client.DeactivateHME(anonymousID)
-	}
-	_ = b.mgr.SaveCookies(accountID, client.Cookies)
-	if err != nil {
-		msg := "操作失败"
-		if !active {
-			msg = "停用失败"
+	err := b.withHME(accountID, op, func(c *hme.Client) error {
+		var e error
+		if active {
+			success, e = c.ReactivateHME(anonymousID)
 		} else {
-			msg = "激活失败"
+			success, e = c.DeactivateHME(anonymousID)
 		}
-		return false, classifyUpstreamErr(msg, err)
+		return e
+	})
+	b.mgr.InvalidateAliases(accountID)
+	if err != nil {
+		return false, err
 	}
 	return success, nil
 }
 
 // DeleteAlias 删除别名。
 func (b *managerBackend) DeleteAlias(accountID, anonymousID string) error {
-	client, err := b.mgr.HMEClient(accountID, false)
-	if err != nil {
-		return mapAccountErr(err)
-	}
-	err = client.Delete(anonymousID)
-	_ = b.mgr.SaveCookies(accountID, client.Cookies)
-	if err != nil {
-		return classifyUpstreamErr("删除失败", err)
-	}
-	return nil
+	err := b.withHME(accountID, "删除失败", func(c *hme.Client) error {
+		return c.Delete(anonymousID)
+	})
+	b.mgr.InvalidateAliases(accountID)
+	return err
 }
 
-// ListInbox 读取收件箱摘要:IMAP (App Password) 优先,Web API (Cookie) 回退。
+// ListInbox 读取收件箱摘要:IMAP(外部邮箱或 App 专用密码)优先,Web API(Cookie)回退。
 func (b *managerBackend) ListInbox(q InboxQuery) (InboxResult, error) {
-	// 优先使用 IMAP 连接池 (App Password 认证,复用长连接)
-	var imapMessages []mail.Message
-	poolErr := b.mgr.WithMailClient(q.AccountID, func(mc *mail.Client) error {
-		var e error
-		if q.Alias != "" {
-			imapMessages, e = mc.FindByRecipient(q.Alias, q.Limit, q.Days)
-		} else {
-			imapMessages, e = mc.ListInbox(q.Limit, q.Days)
+	var imapErr error
+	if b.mgr.HasMailbox(q.AccountID) {
+		var imapMessages []mail.Message
+		imapErr = b.mgr.WithMailClient(q.AccountID, func(mc *mail.Client) error {
+			var e error
+			if q.Alias != "" {
+				imapMessages, e = mc.FindByRecipient(q.Alias, q.Limit, q.Days)
+			} else {
+				imapMessages, e = mc.ListInbox(q.Limit, q.Days)
+			}
+			return e
+		})
+		if imapErr == nil {
+			if imapMessages == nil {
+				imapMessages = []mail.Message{}
+			}
+			return InboxResult{AccountID: q.AccountID, Alias: q.Alias, Count: len(imapMessages), Messages: imapMessages, Method: "imap"}, nil
 		}
-		return e
-	})
-	if poolErr == nil {
-		return InboxResult{
-			AccountID: q.AccountID,
-			Alias:     q.Alias,
-			Count:     len(imapMessages),
-			Messages:  imapMessages,
-			Method:    "imap",
-		}, nil
 	}
-	// IMAP 失败,继续尝试 Web API
 
 	// 回退到 Web API (Cookie 认证,无需 App Password)
 	wmc, err := b.mgr.WebMailClient(q.AccountID)
 	if err != nil {
-		return InboxResult{}, &BackendError{Status: http.StatusBadRequest, Code: "VALIDATION_ERROR", Message: "无可用邮件客户端: 需要 App Password 或 Cookie"}
-	}
-
-	if q.Alias != "" {
-		messages, err := wmc.FindByAlias(q.Alias, q.Limit)
-		if err != nil {
-			return InboxResult{}, &BackendError{Status: http.StatusBadGateway, Code: "UPSTREAM_FAILURE", Message: "读取邮件失败"}
+		if imapErr != nil {
+			return InboxResult{}, &BackendError{Status: http.StatusBadGateway, Code: "UPSTREAM_FAILURE", Message: "读取邮件失败: " + mailErrMessage(imapErr)}
 		}
-		return InboxResult{AccountID: q.AccountID, Alias: q.Alias, Count: len(messages), Messages: messages, Method: "web_api"}, nil
+		return InboxResult{}, &BackendError{Status: http.StatusBadRequest, Code: "VALIDATION_ERROR", Message: "无可用邮件客户端: 请配置收件邮箱授权码 / App 专用密码,或 iCloud Cookie"}
 	}
-	messages, err := wmc.ListInbox(q.Limit)
+	var messages []mail.Message
+	if q.Alias != "" {
+		messages, err = wmc.FindByAlias(q.Alias, q.Limit)
+	} else {
+		messages, err = wmc.ListInbox(q.Limit)
+	}
 	if err != nil {
-		return InboxResult{}, &BackendError{Status: http.StatusBadGateway, Code: "UPSTREAM_FAILURE", Message: "读取邮件失败"}
+		msg := "读取邮件失败: Web 接口返回 " + truncateMsg(err.Error(), 120)
+		if imapErr != nil {
+			msg = "读取邮件失败: IMAP " + mailErrMessage(imapErr) + ";Web 接口也失败"
+		}
+		return InboxResult{}, &BackendError{Status: http.StatusBadGateway, Code: "UPSTREAM_FAILURE", Message: msg}
 	}
-	return InboxResult{AccountID: q.AccountID, Count: len(messages), Messages: messages, Method: "web_api"}, nil
+	return InboxResult{AccountID: q.AccountID, Alias: q.Alias, Count: len(messages), Messages: messages, Method: "web_api"}, nil
 }
 
 func (b *managerBackend) GetMessage(accountID string, uid uint32) (*mail.FullMessage, error) {
-	mc, err := b.mgr.MailClient(accountID)
+	var message *mail.FullMessage
+	err := b.mgr.WithMailClient(accountID, func(mc *mail.Client) error {
+		var e error
+		message, e = mc.GetFull(uid)
+		return e
+	})
 	if err != nil {
-		return nil, mapAccountErr(err)
-	}
-	if err := mc.Connect(); err != nil {
-		return nil, &BackendError{Status: http.StatusBadGateway, Code: "UPSTREAM_FAILURE", Message: "读取邮件失败"}
-	}
-	defer mc.Disconnect()
-	message, err := mc.GetFull(uid)
-	if err != nil {
-		return nil, &BackendError{Status: http.StatusBadGateway, Code: "UPSTREAM_FAILURE", Message: "读取邮件详情失败"}
+		if errors.Is(err, account.ErrNoMailbox) || strings.Contains(err.Error(), "账号不存在") {
+			return nil, mapAccountErr(err)
+		}
+		return nil, &BackendError{Status: http.StatusBadGateway, Code: "UPSTREAM_FAILURE", Message: "读取邮件详情失败: " + mailErrMessage(err)}
 	}
 	return message, nil
 }
 
 func (b *managerBackend) DeleteMessage(accountID string, uid uint32) error {
-	mc, err := b.mgr.MailClient(accountID)
+	err := b.mgr.WithMailClient(accountID, func(mc *mail.Client) error {
+		return mc.Delete(uid)
+	})
 	if err != nil {
-		return mapAccountErr(err)
-	}
-	if err := mc.Connect(); err != nil {
-		return &BackendError{Status: http.StatusBadGateway, Code: "UPSTREAM_FAILURE", Message: "删除邮件失败"}
-	}
-	defer mc.Disconnect()
-	if err := mc.Delete(uid); err != nil {
-		return &BackendError{Status: http.StatusBadGateway, Code: "UPSTREAM_FAILURE", Message: "删除邮件失败"}
+		if errors.Is(err, account.ErrNoMailbox) || strings.Contains(err.Error(), "账号不存在") {
+			return mapAccountErr(err)
+		}
+		return &BackendError{Status: http.StatusBadGateway, Code: "UPSTREAM_FAILURE", Message: "删除邮件失败: " + mailErrMessage(err)}
 	}
 	return nil
 }
 
+// mailErrMessage 把 IMAP 错误转换为简短中文原因。
+func mailErrMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	s := err.Error()
+	lower := strings.ToLower(s)
+	switch {
+	case strings.Contains(s, "登录失败") || strings.Contains(lower, "authenticat") || strings.Contains(lower, "login fail"):
+		return "邮箱登录失败,请检查授权码/App 专用密码是否已失效"
+	case strings.Contains(lower, "timeout") || strings.Contains(lower, "i/o timeout"):
+		return "连接邮箱服务器超时"
+	case strings.Contains(s, "连接失败") || strings.Contains(lower, "connection refused") || strings.Contains(lower, "no such host"):
+		return "无法连接邮箱服务器"
+	case strings.Contains(s, "邮件不存在"):
+		return "邮件不存在或已被删除"
+	}
+	return truncateMsg(s, 120)
+}
+
+func truncateMsg(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
+}
 // Reload 重新加载配置。
 func (b *managerBackend) Reload() error {
 	if err := b.mgr.Reload(); err != nil {
@@ -354,26 +407,38 @@ func mapAccountErr(err error) *BackendError {
 	return &BackendError{Status: http.StatusBadRequest, Code: "VALIDATION_ERROR", Message: msg}
 }
 
-// classifyUpstreamErr 把上游 (iCloud) 错误映射为稳定错误,不拼接上游响应体。
+// classifyUpstreamErr 把上游 (iCloud) 错误映射为稳定错误码,并附带可读的失败原因
+// (HTTP 状态、Apple 错误码等,不包含 Cookie 等敏感信息)。
 func classifyUpstreamErr(fixedMsg string, err error) *BackendError {
 	if err == nil {
 		return nil
 	}
+	if ue, ok := hme.AsUpstreamError(err); ok {
+		switch ue.Kind {
+		case hme.KindSessionExpired:
+			return &BackendError{Status: http.StatusUnauthorized, Code: "UPSTREAM_UNAUTHORIZED", Message: ue.Message()}
+		case hme.KindRateLimited:
+			return &BackendError{Status: http.StatusTooManyRequests, Code: "UPSTREAM_RATE_LIMITED", Message: ue.Message()}
+		case hme.KindNetwork:
+			return &BackendError{Status: http.StatusGatewayTimeout, Code: "UPSTREAM_UNREACHABLE", Message: ue.Message()}
+		case hme.KindNotSubscribed:
+			return &BackendError{Status: http.StatusBadGateway, Code: "UPSTREAM_NOT_SUBSCRIBED", Message: ue.Message()}
+		default:
+			return &BackendError{Status: http.StatusBadGateway, Code: "UPSTREAM_FAILURE", Message: ue.Message()}
+		}
+	}
 	if isSessionError(err.Error()) {
 		return &BackendError{Status: http.StatusUnauthorized, Code: "UPSTREAM_UNAUTHORIZED", Message: "iCloud 会话失效,请更新 Cookie"}
 	}
-	return &BackendError{Status: http.StatusBadGateway, Code: "UPSTREAM_FAILURE", Message: fixedMsg}
+	return &BackendError{Status: http.StatusBadGateway, Code: "UPSTREAM_FAILURE", Message: fixedMsg + ": " + truncateMsg(err.Error(), 160)}
 }
 
-// isSessionError 判断错误是否由会话失效引起。
+// isSessionError 判断(非结构化)错误是否由会话失效引起,用于登录流程等旧路径。
 func isSessionError(msg string) bool {
 	m := strings.ToLower(msg)
-	return strings.Contains(m, "401") || strings.Contains(m, "403") ||
-		strings.Contains(m, "session") || strings.Contains(m, "cookie") ||
-		strings.Contains(m, "unauthorized") || strings.Contains(m, "认证") ||
-		strings.Contains(m, "会话校验失败")
+	return strings.Contains(m, "http 401") || strings.Contains(m, "http 403") || strings.Contains(m, "http 421") ||
+		strings.Contains(m, "unauthorized") || strings.Contains(m, "会话校验失败")
 }
-
 // asBackendError 提取 BackendError,非 BackendError 统一为 INTERNAL_ERROR。
 func asBackendError(err error) *BackendError {
 	var be *BackendError

@@ -45,6 +45,15 @@ export interface Alias {
   createdAt?: string
 }
 
+/** 别名列表响应 */
+export interface AliasListResult {
+  account_id: string
+  count: number
+  aliases: Alias[]
+  cached?: boolean
+  fetched_at?: string
+}
+
 /** 邮件摘要 */
 export interface InboxMessage {
   id: string
@@ -53,6 +62,7 @@ export interface InboxMessage {
   subject: string
   date: string
   preview: string
+  size?: number
 }
 
 export interface FullMessage extends InboxMessage {

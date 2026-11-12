@@ -18,6 +18,7 @@
 //	ICLOUD_HME_ADMIN_PASSWORD      管理员密码,至少 8 字符(进程启动后从环境清除)
 //	ICLOUD_HME_SESSION_TTL         会话有效期,默认 12h,范围 15m-168h
 //	ICLOUD_HME_SECURE_COOKIE       TLS 反向代理部署时设为 true
+//	ICLOUD_HME_KEEPALIVE           iCloud 会话保活间隔,默认 15m,设为 0 关闭
 package main
 
 import (
@@ -62,6 +63,13 @@ func main() {
 	count := len(mgr.ListAccounts())
 	log.Printf("账号加载完成 count=%d data_dir=%s", count, abs)
 
+	keepalive := parseKeepalive(os.Getenv("ICLOUD_HME_KEEPALIVE"))
+	stopKeepalive := mgr.StartKeepalive(keepalive)
+	defer stopKeepalive()
+	if keepalive > 0 {
+		log.Printf("iCloud 会话保活已启用 interval=%s", keepalive)
+	}
+
 	srv, err := server.New(mgr, server.Config{
 		Debug:         *debug,
 		AdminPassword: adminPassword,
@@ -79,6 +87,25 @@ func main() {
 	if err := srv.Run(*addr); err != nil {
 		log.Fatalf("服务启动失败: %v", err)
 	}
+}
+
+// parseKeepalive 解析 iCloud 会话保活间隔,默认 15m;"0"/"off" 关闭,最小 5m。
+func parseKeepalive(raw string) time.Duration {
+	switch raw {
+	case "":
+		return 15 * time.Minute
+	case "0", "off", "false":
+		return 0
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		log.Printf("ICLOUD_HME_KEEPALIVE 无效(%q),使用默认 15m", raw)
+		return 15 * time.Minute
+	}
+	if d < 5*time.Minute {
+		d = 5 * time.Minute
+	}
+	return d
 }
 
 // parseSessionTTL 解析会话有效期,默认 12h,范围 15m-168h。
