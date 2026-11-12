@@ -139,11 +139,12 @@ func (m *Manager) StoreAliases(id string, aliases []hme.Alias) time.Time {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if acc, ok := m.accounts[id]; ok {
-		changed := acc.AliasTotal != len(aliases) || acc.AliasActive != active || acc.Status != "active" || acc.LastError != ""
+		changed := acc.AliasTotal != len(aliases) || acc.AliasActive != active || acc.Status != "active" || acc.LastError != "" || acc.StatusDetail != ""
 		acc.AliasTotal = len(aliases)
 		acc.AliasActive = active
 		acc.Status = "active"
 		acc.LastError = ""
+		acc.StatusDetail = ""
 		acc.LastValidated = now.Format(time.RFC3339)
 		if changed {
 			_ = m.save()

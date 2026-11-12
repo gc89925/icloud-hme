@@ -23,6 +23,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -118,7 +119,8 @@ func parseSessionTTL(raw string) (time.Duration, error) {
 		return 0, err
 	}
 	if d < 15*time.Minute || d > 168*time.Hour {
-		return 0, err
+		// 旧版这里返回的是 nil error,越界时会静默得到 0 时长的会话
+		return 0, fmt.Errorf("需在 15m-168h 之间,当前 %s", d)
 	}
 	return d, nil
 }

@@ -152,6 +152,9 @@ describe('AccountsPage', () => {
     await user.type(textarea, 'a=1; b=2')
     await user.click(screen.getByRole('button', { name: /保存/ }))
     await waitFor(() => expect(cookieBody).toContain('a=1; b=2'))
+    // 保存成功后弹窗关闭;再次打开为空(从不回显)
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await user.click(screen.getAllByRole('button', { name: /更新 Cookie/ })[0])
     expect((screen.getByLabelText('Cookie') as HTMLTextAreaElement).value).toBe('')
   })
 
@@ -203,6 +206,8 @@ describe('AccountsPage', () => {
     await user.type(screen.getByLabelText('App 专用密码'), 'xxxx-xxxx-xxxx-xxxx')
     await user.click(screen.getByRole('button', { name: /保存/ }))
     await waitFor(() => expect(pwdBody).toContain('app@icloud.com'))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await user.click(screen.getAllByRole('button', { name: /设置 App 密码/ })[0])
     expect((screen.getByLabelText('App 专用密码') as HTMLInputElement).value).toBe('')
   })
 
@@ -225,10 +230,9 @@ describe('AccountsPage', () => {
     expect(input.value).toBe('')
     await user.type(input, 'http://u:p@proxy.example.com:8080')
     await user.click(screen.getByRole('button', { name: /保存/ }))
-    // 保存后输入清空
-    await waitFor(() => expect(input.value).toBe(''))
-    // 关闭后重新打开:仍为空(从不回显)
-    await user.click(screen.getByRole('button', { name: /取消/ }))
+    // 保存成功后弹窗关闭
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    // 重新打开:仍为空(从不回显)
     await user.click(screen.getAllByRole('button', { name: /设置代理/ })[0])
     expect((screen.getByLabelText(/代理地址/) as HTMLInputElement).value).toBe('')
   })
@@ -253,5 +257,34 @@ describe('AccountsPage', () => {
     // 取消不发请求
     await user.click(screen.getByRole('button', { name: /取消/ }))
     expect(deleted).toBe(false)
+  })
+
+  it('编辑账号:表单预填当前信息,只提交修改过的字段', async () => {
+    let patchBody: Record<string, string> = {}
+    let patchedId = ''
+    server.use(
+      http.get('/api/accounts', () => HttpResponse.json({ success: true, data: accounts })),
+      http.patch('/api/accounts/:id', async ({ request, params }) => {
+        patchedId = String(params.id)
+        patchBody = (await request.json()) as Record<string, string>
+        return HttpResponse.json({ success: true, data: { ...accounts[0], ...patchBody } })
+      }),
+    )
+    renderPage()
+    await screen.findByText('活跃号')
+    const user = userEvent.setup()
+    await user.click(screen.getAllByRole('button', { name: /编辑/ })[0])
+    const name = screen.getByLabelText('名称') as HTMLInputElement
+    const email = screen.getByLabelText(/^邮箱/) as HTMLInputElement
+    expect(name.value).toBe('活跃号')
+    expect(email.value).toBe('active@icloud.com')
+    expect(email).not.toBeDisabled()
+    expect(screen.getByRole('button', { name: '保存' })).toBeDisabled()
+    await user.clear(name)
+    await user.type(name, '主力号')
+    await user.click(screen.getByRole('button', { name: '保存' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(patchedId).toBe(accounts[0].id)
+    expect(patchBody).toEqual({ name: '主力号' })
   })
 })

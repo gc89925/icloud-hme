@@ -209,13 +209,14 @@ func (c *Client) ForEachByRecipient(recipient string, limit int, days int, onMsg
 	}
 	uids, err := c.cli.UidSearch(criteria)
 	var msgs []Message
-	if err == nil && len(uids) > 0 {
+	if err == nil {
+		// 服务端搜索成功(包括 0 结果)直接使用,不再额外扫描最近邮件
 		msgs, err = c.fetchSummaries(newestUIDs(sortUIDs(uids), limit), days)
 		if err != nil {
 			return err
 		}
 	} else {
-		// 2) fallback: 扫最近若干封信封, 本地匹配 To 后再批量取正文
+		// 2) fallback: 服务器不支持按 To 搜索时,扫最近若干封信封, 本地匹配后再批量取正文
 		msgs, err = c.recentMatching(recipient, limit, days)
 		if err != nil {
 			return err

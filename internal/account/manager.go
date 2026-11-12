@@ -77,6 +77,10 @@ func copyAccount(acc *Account) *Account {
 	}
 	cp := *acc
 	cp.Cookies = cloneCookies(acc.Cookies)
+	if acc.Mailbox != nil {
+		mb := *acc.Mailbox
+		cp.Mailbox = &mb
+	}
 	return &cp
 }
 
@@ -146,7 +150,12 @@ func (m *Manager) save() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(m.dataFile, raw, 0600)
+	// 先写临时文件再原子替换,避免写到一半断电/崩溃把 accounts.json 写坏
+	tmp := m.dataFile + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, m.dataFile)
 }
 
 // ParseCookieInput 解析 Cookie 输入,支持两种格式:
@@ -526,6 +535,7 @@ func (m *Manager) HMEClientWithPassword(id, password string, otpProvider hme.OTP
 	cur.Status = "active"
 	cur.LastValidated = time.Now().Format(time.RFC3339)
 	cur.LastError = ""
+	cur.StatusDetail = ""
 	if info := client.AccountInfo(); info != nil {
 		cur.RealEmail = firstNonEmpty(info.AppleID, info.PrimaryEmail)
 		if cur.ICloudEmail == "" {
@@ -750,6 +760,7 @@ func (m *Manager) UpdateCookies(id string, cookies map[string]string) error {
 		snap.Status = "active"
 		snap.LastValidated = time.Now().Format(time.RFC3339)
 		snap.LastError = ""
+		snap.StatusDetail = ""
 		if info := client.AccountInfo(); info != nil {
 			snap.RealEmail = firstNonEmpty(info.AppleID, info.PrimaryEmail)
 			if snap.ICloudEmail == "" {
@@ -769,6 +780,7 @@ func (m *Manager) UpdateCookies(id string, cookies map[string]string) error {
 	cur.Status = snap.Status
 	cur.LastValidated = snap.LastValidated
 	cur.LastError = snap.LastError
+	cur.StatusDetail = snap.StatusDetail
 	cur.RealEmail = snap.RealEmail
 	if cur.ICloudEmail == "" {
 		cur.ICloudEmail = snap.ICloudEmail

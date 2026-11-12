@@ -62,7 +62,7 @@ export default function ConfirmDialog({
           className="danger"
           disabled={!matched || busy}
           onClick={() => {
-            setInput('')
+            // 不在这里清空输入:操作失败时弹窗保持打开,用户无需重新输入确认文本
             onConfirm()
           }}
         >

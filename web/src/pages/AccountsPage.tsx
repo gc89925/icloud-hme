@@ -43,6 +43,13 @@ function StatusBadge({ status }: { status: string }) {
   )
 }
 
+function formatTime(raw?: string): string {
+  if (!raw) return '—'
+  const d = new Date(raw)
+  if (Number.isNaN(d.getTime())) return raw
+  return new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(d)
+}
+
 function credText(acc: AccountSummary): string {
   const parts: string[] = []
   if (acc.has_cookies) parts.push('Cookie')
@@ -187,7 +194,7 @@ export default function AccountsPage() {
                     </span>
                   </td>
                   <td>{credText(acc)}</td>
-                  <td>{acc.last_validated ? acc.last_validated : '—'}</td>
+                  <td className="cell-nowrap">{formatTime(acc.last_validated)}</td>
                   <td>
                     <div className="row-actions">
                       <button onClick={() => { setEditing(acc); setFormOpen(true) }}>
@@ -220,22 +227,26 @@ export default function AccountsPage() {
         </div>
       </AsyncState>
 
-      <AccountFormDialog
-        open={formOpen}
-        onClose={() => setFormOpen(false)}
-        onSaved={() => {
-          setFormOpen(false)
-          show('账号已保存')
-          void load()
-        }}
-        editing={editing ? { id: editing.id, name: editing.name, icloudEmail: editing.icloud_email, host: editing.host } : null}
-      />
+      {formOpen && (
+        <AccountFormDialog
+          key={editing?.id ?? 'new'}
+          open
+          onClose={() => setFormOpen(false)}
+          onSaved={() => {
+            setFormOpen(false)
+            show(editing ? '账号信息已更新' : '账号已添加')
+            void load()
+          }}
+          editing={editing ? { id: editing.id, name: editing.name, icloudEmail: editing.icloud_email || editing.real_email, host: editing.host } : null}
+        />
+      )}
       {cookieFor && (
         <CookieDialog
           accountId={cookieFor.id}
           open
           onClose={() => setCookieFor(null)}
           onSaved={() => {
+            setCookieFor(null)
             show('Cookie 已更新')
             void load()
           }}
@@ -247,6 +258,7 @@ export default function AccountsPage() {
           open
           onClose={() => setLoginFor(null)}
           onSaved={() => {
+            setLoginFor(null)
             show('登录成功')
             void load()
           }}
@@ -258,6 +270,7 @@ export default function AccountsPage() {
           open
           onClose={() => setAppPwdFor(null)}
           onSaved={() => {
+            setAppPwdFor(null)
             show('App 专用密码已设置')
             void load()
           }}
@@ -269,6 +282,7 @@ export default function AccountsPage() {
           open
           onClose={() => setProxyFor(null)}
           onSaved={() => {
+            setProxyFor(null)
             show('代理已更新')
             void load()
           }}
