@@ -931,14 +931,22 @@ td .cell-secondary {
   white-space: nowrap;
 }
 
-.inbox-actions .icon-button {
+.inbox-table .inbox-actions button.icon-button {
   margin-left: 0;
+  width: 32px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0;
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
+  background: transparent;
   color: var(--color-danger);
 }
 
-.inbox-actions .icon-button:hover:not(:disabled) {
+.inbox-table .inbox-actions button.icon-button:hover:not(:disabled) {
   background: var(--color-danger-soft);
+  border-color: var(--color-danger);
+  color: var(--color-danger);
 }
 
 .list-meta {
@@ -953,6 +961,12 @@ td .cell-secondary {
   margin-top: var(--space-2);
   font-size: var(--text-sm);
   color: var(--color-text-secondary);
+}
+
+.alert-hint a,
+.hint a {
+  color: var(--color-primary);
+  font-weight: 500;
 }
 
 /* 减少动效偏好 */
