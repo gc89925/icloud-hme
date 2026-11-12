@@ -237,7 +237,8 @@ describe('AliasesPage', () => {
     )
     expect((screen.getByLabelText(/标签/) as HTMLInputElement).value.length).toBe(200)
     await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: /创建/ }))
-    expect(await screen.findByText('gamma@icloud.com')).toBeInTheDocument()
+    // 列表刷新后出现新别名(复制提示 toast 里也会显示同一邮箱,所以限定在表格内查找)
+    expect(await within(screen.getByRole('table')).findByText('gamma@icloud.com')).toBeInTheDocument()
   })
 
   it('停用别名:显示目标邮箱并二次确认', async () => {
@@ -324,5 +325,60 @@ describe('AliasesPage', () => {
     await user.click(screen.getByRole('button', { name: /确认停用/ }))
     expect(await screen.findByRole('alert')).toHaveTextContent('停用失败')
     expect(screen.getByText('alpha@icloud.com')).toBeInTheDocument()
+  })
+
+  it('创建别名弹窗:点击遮罩不关闭,取消后再打开保留已填标签', async () => {
+    server.use(
+      http.get('/api/accounts', () => HttpResponse.json({ success: true, data: accounts })),
+      http.get('/api/aliases', () =>
+        HttpResponse.json({ success: true, data: { account_id: 'acc_1', count: 2, aliases } }),
+      ),
+    )
+    renderPage()
+    await screen.findByText('alpha@icloud.com')
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: /创建别名/ }))
+    await user.type(screen.getByLabelText(/标签/), '单席位')
+    const backdrop = document.querySelector('.dialog-backdrop') as HTMLElement
+    await user.click(backdrop)
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect((screen.getByLabelText(/标签/) as HTMLInputElement).value).toBe('单席位')
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: '取消' }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /创建别名/ }))
+    expect((screen.getByLabelText(/标签/) as HTMLInputElement).value).toBe('单席位')
+  })
+
+  it('修改标签:PATCH 携带原备注,成功后行内更新', async () => {
+    let patched: { account_id?: string; label?: string; note?: string } = {}
+    let patchedId = ''
+    server.use(
+      http.get('/api/accounts', () => HttpResponse.json({ success: true, data: accounts })),
+      http.get('/api/aliases', () =>
+        HttpResponse.json({
+          success: true,
+          data: { account_id: 'acc_1', count: 2, aliases: [{ ...aliases[0], note: '原备注' }, aliases[1]] },
+        }),
+      ),
+      http.patch('/api/aliases/:id', async ({ request, params }) => {
+        patchedId = String(params.id)
+        patched = (await request.json()) as typeof patched
+        return HttpResponse.json({ success: true, data: { anonymousId: patchedId, label: patched.label } })
+      }),
+    )
+    renderPage()
+    await screen.findByText('alpha@icloud.com')
+    const user = userEvent.setup()
+    const alphaRow = within(screen.getByRole('table')).getByRole('row', { name: /alpha@icloud\.com/ })
+    await user.click(within(alphaRow).getByRole('button', { name: '编辑' }))
+    const input = screen.getByLabelText('新标签') as HTMLInputElement
+    expect(input.value).toBe('Alpha')
+    await user.clear(input)
+    await user.type(input, '普通号')
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: '保存' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(patchedId).toBe('anon_alpha')
+    expect(patched).toEqual({ account_id: 'acc_1', label: '普通号', note: '原备注' })
+    expect(screen.getByText('普通号')).toBeInTheDocument()
   })
 })

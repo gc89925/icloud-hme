@@ -56,6 +56,7 @@ type Backend interface {
 	ListAliases(string, bool) (AliasList, error)
 	SetAliasActive(string, string, bool) (bool, error)
 	DeleteAlias(string, string) error
+	UpdateAliasLabel(string, string, string, *string) (hme.Alias, error)
 	ListInbox(InboxQuery) (InboxResult, error)
 	GetMessage(string, uint32) (*mail.FullMessage, error)
 	DeleteMessage(string, uint32) error
@@ -285,6 +286,51 @@ func (b *managerBackend) DeleteAlias(accountID, anonymousID string) error {
 	return err
 }
 
+// UpdateAliasLabel 修改别名标签。note 为 nil 时沿用 iCloud 上的原备注(避免被接口覆盖清空)。
+func (b *managerBackend) UpdateAliasLabel(accountID, anonymousID, label string, note *string) (hme.Alias, error) {
+	var current *hme.Alias
+	if note == nil {
+		list, err := b.ListAliases(accountID, false)
+		if err != nil {
+			return hme.Alias{}, err
+		}
+		for i := range list.Aliases {
+			if list.Aliases[i].AnonymousID == anonymousID {
+				current = &list.Aliases[i]
+				break
+			}
+		}
+		if current == nil {
+			// 缓存可能过期,强制刷新再找一次
+			if list, err = b.ListAliases(accountID, true); err != nil {
+				return hme.Alias{}, err
+			}
+			for i := range list.Aliases {
+				if list.Aliases[i].AnonymousID == anonymousID {
+					current = &list.Aliases[i]
+					break
+				}
+			}
+		}
+		if current == nil {
+			return hme.Alias{}, &BackendError{Status: http.StatusNotFound, Code: "ALIAS_NOT_FOUND", Message: "别名不存在或已被删除"}
+		}
+		n := current.Note
+		note = &n
+	}
+	err := b.withHME(accountID, "修改标签失败", func(c *hme.Client) error {
+		return c.UpdateLabel(anonymousID, label, *note)
+	})
+	b.mgr.InvalidateAliases(accountID)
+	if err != nil {
+		return hme.Alias{}, err
+	}
+	out := hme.Alias{AnonymousID: anonymousID, Label: label, Note: *note}
+	if current != nil {
+		out.Email, out.Active, out.CreatedAt = current.Email, current.Active, current.CreatedAt
+	}
+	return out, nil
+}
 // ListInbox 读取收件箱摘要:IMAP(外部邮箱或 App 专用密码)优先,Web API(Cookie)回退。
 func (b *managerBackend) ListInbox(q InboxQuery) (InboxResult, error) {
 	var imapErr error

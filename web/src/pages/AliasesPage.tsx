@@ -4,6 +4,7 @@ import { request, ApiError } from '../api/client'
 import type { AccountSummary, Alias, AliasListResult } from '../api/types'
 import AsyncState from '../components/AsyncState'
 import CreateAliasDialog from '../components/CreateAliasDialog'
+import EditLabelDialog from '../components/EditLabelDialog'
 import ConfirmDialog from '../components/ConfirmDialog'
 import { useToast } from '../components/ToastProvider'
 import { copyText } from '../utils/clipboard'
@@ -12,6 +13,7 @@ import {
   IconChevronDown,
   IconChevronUp,
   IconClock,
+  IconEdit,
   IconInbox,
   IconPlus,
   IconSearch,
@@ -75,6 +77,7 @@ export default function AliasesPage() {
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState('')
   const [errorCode, setErrorCode] = useState('')
+  const [editFor, setEditFor] = useState<Alias | null>(null)
   const [settledKey, setSettledKey] = useState('')
   const [fetchedAt, setFetchedAt] = useState('')
   const [cached, setCached] = useState(false)
@@ -377,7 +380,21 @@ export default function AliasesPage() {
                       {alias.email}
                     </button>
                   </td>
-                  <td>{alias.label || '—'}</td>
+                  <td>
+                    <div className="label-cell">
+                      <span className={alias.label ? undefined : 'cell-muted'}>{alias.label || '—'}</span>
+                      <button
+                        type="button"
+                        className="label-edit-button"
+                        aria-label="编辑"
+                        title="修改标签"
+                        disabled={busy}
+                        onClick={() => setEditFor(alias)}
+                      >
+                        <IconEdit size={14} />
+                      </button>
+                    </div>
+                  </td>
                   <td>
                     <span className={alias.active ? 'badge badge-active' : 'badge badge-neutral'}>
                       {alias.active ? <IconCheck size={12} /> : <IconClock size={12} />}
@@ -441,6 +458,20 @@ export default function AliasesPage() {
         onClose={() => setCreateOpen(false)}
         onCreated={handleCreated}
       />
+
+      {editFor && (
+        <EditLabelDialog
+          accountId={accountId}
+          alias={editFor}
+          onClose={() => setEditFor(null)}
+          onSaved={(updated) => {
+            setEditFor(null)
+            // 本地更新,无需重新拉取整个列表
+            setAliases((prev) => prev.map((a) => (a.anonymousId === updated.anonymousId ? { ...a, label: updated.label } : a)))
+            show('标签已更新')
+          }}
+        />
+      )}
 
       {confirm && (
         <ConfirmDialog

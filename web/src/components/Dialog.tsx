@@ -54,15 +54,9 @@ export default function Dialog({ title, open, onClose, children }: DialogProps) 
 
   if (!open) return null
 
+  // 点击遮罩不关闭:避免误点背景导致表单内容丢失。关闭请用按钮或 Esc。
   return (
-    <button
-      type="button"
-      className="dialog-backdrop"
-      aria-label="关闭对话框"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose()
-      }}
-    >
+    <div className="dialog-backdrop">
       <div
         ref={ref}
         className="dialog"
@@ -73,6 +67,6 @@ export default function Dialog({ title, open, onClose, children }: DialogProps) 
         <h3>{title}</h3>
         {children}
       </div>
-    </button>
+    </div>
   )
 }

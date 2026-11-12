@@ -56,6 +56,7 @@ type Alias struct {
 	Email       string `json:"email"`
 	AnonymousID string `json:"anonymousId"`
 	Label       string `json:"label"`
+	Note        string `json:"note,omitempty"`
 	Active      bool   `json:"active"`
 	CreatedAt   string `json:"createdAt,omitempty"`
 }
@@ -717,6 +718,22 @@ func (c *Client) ReactivateHME(anonymousID string) (bool, error) {
 	return true, nil
 }
 
+// UpdateLabel 修改别名的标签(和备注),邮箱地址与转发不受影响。
+// iCloud 接口会整体覆盖 label 与 note,调用方需传入原备注以免被清空。
+func (c *Client) UpdateLabel(anonymousID, label, note string) error {
+	c.log("修改标签 %s → %s", anonymousID, label)
+	payload := map[string]string{"anonymousId": anonymousID, "label": label, "note": note}
+	body, err := c.callService("修改标签", "POST", "/v1/hme/updateMetaData", payload, MaxRetries)
+	if err != nil {
+		return err
+	}
+	parsed := gjson.Parse(body)
+	if !parsed.Get("success").Bool() {
+		return businessError("修改标签", parsed)
+	}
+	return nil
+}
+
 // Delete 删除别名。iCloud 只允许删除已停用的别名,直接删除失败时会先停用再删。
 func (c *Client) Delete(anonymousID string) error {
 	c.log("删除 %s ...", anonymousID)
@@ -794,6 +811,7 @@ func parseAliasList(body string) []Alias {
 			Email:       email,
 			AnonymousID: firstNonEmpty(item.Get("anonymousId").String(), item.Get("id").String()),
 			Label:       firstNonEmpty(item.Get("label").String(), meta.Get("label").String()),
+			Note:        firstNonEmpty(item.Get("note").String(), meta.Get("note").String()),
 			Active:      active,
 			CreatedAt:   firstNonEmpty(item.Get("createTimestamp").String(), item.Get("createdAt").String()),
 		})

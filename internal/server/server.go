@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"icloud-hme/internal/account"
@@ -122,6 +123,7 @@ func (s *Server) register() {
 			authed.POST("/aliases/:id/deactivate", csrfCheck(s.auth), s.deactivateAliasHandler)
 			authed.POST("/aliases/:id/reactivate", csrfCheck(s.auth), s.reactivateAliasHandler)
 			authed.DELETE("/aliases/:id", csrfCheck(s.auth), s.deleteAliasHandler)
+			authed.PATCH("/aliases/:id", csrfCheck(s.auth), s.updateAliasLabelHandler)
 
 			// ===== 系统 =====
 			authed.POST("/reload", csrfCheck(s.auth), s.reloadConfigHandler)
@@ -171,6 +173,11 @@ func (s *Server) createAliasHandler(c *gin.Context) {
 	}
 	if len([]rune(req.Label)) > 200 {
 		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "参数错误: label 最长 200 字符")
+		return
+	}
+
+	if strings.ContainsRune(req.Label, utf8.RuneError) {
+		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "参数错误: 标签含无法识别的字符(请求编码不是 UTF-8)")
 		return
 	}
 
@@ -359,6 +366,44 @@ func (s *Server) deleteAliasHandler(c *gin.Context) {
 	ok(c, gin.H{"anonymous_id": anonymousID})
 }
 
+type updateAliasLabelReq struct {
+	AccountID string  `json:"account_id"`
+	Label     string  `json:"label"`
+	Note      *string `json:"note"`
+}
+
+// updateAliasLabelHandler 修改别名标签:PATCH /api/aliases/:id {"account_id","label","note"?}
+func (s *Server) updateAliasLabelHandler(c *gin.Context) {
+	anonymousID := c.Param("id")
+	var req updateAliasLabelReq
+	if err := c.ShouldBindJSON(&req); err != nil || req.AccountID == "" {
+		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "参数错误: account_id 必填")
+		return
+	}
+	if anonymousID == "" || len(anonymousID) > 256 {
+		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "参数错误: anonymous id 无效")
+		return
+	}
+	label := strings.TrimSpace(req.Label)
+	if label == "" || len([]rune(label)) > 200 {
+		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "参数错误: 标签不能为空且最长 200 字符")
+		return
+	}
+	if req.Note != nil && len([]rune(*req.Note)) > 1000 {
+		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "参数错误: 备注最长 1000 字符")
+		return
+	}
+	if strings.ContainsRune(label, utf8.RuneError) || (req.Note != nil && strings.ContainsRune(*req.Note, utf8.RuneError)) {
+		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "参数错误: 标签含无法识别的字符(请求编码不是 UTF-8)")
+		return
+	}
+	alias, err := s.be.UpdateAliasLabel(req.AccountID, anonymousID, label, req.Note)
+	if err != nil {
+		backendFail(c, err)
+		return
+	}
+	ok(c, alias)
+}
 // ====================================================================
 // 系统
 // ====================================================================

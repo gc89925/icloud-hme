@@ -47,7 +47,7 @@ export default function CreateAliasDialog({
       title="创建别名"
       open={open}
       onClose={() => {
-        setLabel('')
+        // 保留已输入的标签草稿,误关后重新打开无需重填;创建成功后才清空
         setError('')
         onClose()
       }}

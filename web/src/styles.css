@@ -969,6 +969,50 @@ td .cell-secondary {
   font-weight: 500;
 }
 
+/* ─── 别名标签:内联编辑按钮 ─── */
+.label-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  max-width: 100%;
+}
+
+.label-cell > span {
+  overflow-wrap: anywhere;
+}
+
+.cell-muted {
+  color: var(--color-text-tertiary);
+}
+
+button.label-edit-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  min-height: 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-tertiary);
+  opacity: 0.55;
+  transition: opacity var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+
+tr:hover button.label-edit-button,
+button.label-edit-button:focus-visible {
+  opacity: 1;
+}
+
+button.label-edit-button:hover:not(:disabled) {
+  color: var(--color-primary);
+  background: var(--color-primary-soft);
+  border-color: transparent;
+}
+
 /* 减少动效偏好 */
 @media (prefers-reduced-motion: reduce) {
   *,

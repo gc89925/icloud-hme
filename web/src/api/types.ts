@@ -41,6 +41,7 @@ export interface Alias {
   email: string
   anonymousId: string
   label: string
+  note?: string
   active: boolean
   createdAt?: string
 }
